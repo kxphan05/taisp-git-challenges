@@ -34,19 +34,43 @@ setup_github() {  # $1 = id, $2 = dir name
 }
 
 # --- 03: merge conflict -----------------------------------------------------
+decode_py() {  # $1 = header comment, $2 = data line, $3 = result line
+cat <<PY
+$1
+import base64, zlib, itertools, functools
+
+def decode(cipher, key):
+    raw = zlib.decompress(base64.b85decode(cipher))
+    return functools.reduce(
+        lambda acc, pair: acc + chr(pair[0] ^ pair[1]),
+        zip(raw, itertools.cycle(key.encode())),
+        "",
+    )
+
+$2
+
+def show(text):
+    print("=" * 40)
+    print(text)
+    print("=" * 40)
+
+$3
+
+show(RESULT)
+PY
+}
 setup_03() {
   local d="$PLAY/03-merge-conflict"; fresh "$d"; cd "$d"
   git init -q -b main; ident
-  local full a b; full="$(flag VEFJU1B7Y29uZmxpY3RzX2FyZV9qdXN0X2NvbnZlcnNhdGlvbnN9)"; a="${full:0:20}"; b="${full:20}"
-  printf '# Combine both halves into ONE flag line.\nflag = TAISP{??}\n' > vault.txt
-  mg add -A; mg commit -qm "init: vault"
+  decode_py '# decode.py: owner = (set on each branch)' 'SECRET = None' 'RESULT = "merge the other branch first"' > decode.py
+  mg add -A; mg commit -qm "init: decoder"
   mg switch -qc feature/dark-mode
   printf ':root { --bg: #0d1117; --fg: #e6edf3; }\nbody { background: var(--bg); color: var(--fg); }\n' > style.css
-  printf '# Combine both halves into ONE flag line.\nflag = ??%s\n' "$b" > vault.txt
-  mg add -A; mg commit -qm "feat: dark mode (plus my half of the flag)"
+  decode_py '# decode.py: owner = dark-mode team' 'CIPHER = "c$`aDFEC1!2;qumiQ|oSanB4AiLr|oa}ms9jOFqRb#o083gC+u@B#qBO9^5"' 'RESULT = decode(CIPHER, KEY)' > decode.py
+  mg add -A; mg commit -qm "feat: dark mode and the cipher"
   mg switch -q main
-  printf '# Combine both halves into ONE flag line.\nflag = %s??\n' "$a" > vault.txt
-  mg add -A; mg commit -qm "docs: my half of the flag"
+  decode_py '# decode.py: owner = platform team' 'KEY = "3f9a1c7e5b2d8046"' 'RESULT = "got the key, still missing the cipher"' > decode.py
+  mg add -A; mg commit -qm "feat: the key"
   done_msg "$d"
 }
 
