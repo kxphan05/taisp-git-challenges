@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# TAISP git CTF: create a practice repo for one challenge.  Usage: ./start 03
+# (Reading this file spoils the challenges. The reps are the point.)
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PLAY="$HERE/play"
+
+command -v git >/dev/null || { echo "git is not installed"; exit 1; }
+
+flag() { printf '%s' "$1" | base64 -d; }
+# run git as the "mentor" (so your own commits are easy to tell apart)
+mg() { git -c user.name="TAISP Mentor" -c user.email="mentor@taisp.invalid" -c commit.gpgsign=false "$@"; }
+ident() {  # make sure *you* can commit in this repo even if git was never configured
+  git config user.name >/dev/null || git config user.name "TAISP Player"
+  git config user.email >/dev/null || git config user.email "player@example.invalid"
+  git config commit.gpgsign false
+}
+fresh() {
+  case "$1" in
+    "$PLAY"/*) rm -rf "$1"; mkdir -p "$1" ;;
+    *) echo "refusing to touch $1"; exit 1 ;;
+  esac
+}
+done_msg() { printf 'Ready: %s\n  cd "%s"\n' "$1" "$1"; }
+
+# --- 01 / 02: real GitHub ---------------------------------------------------
+setup_github() {  # $1 = id, $2 = dir name
+  local d="$PLAY/$2"; fresh "$d"
+  cp -R "$HERE/github/$1/." "$d/"
+  cd "$d"; git init -q -b main; ident
+  mg add -A; mg commit -qm "init: starter"
+  done_msg "$d"; echo "Read README.md in that folder for the GitHub steps."
+}
+
+# --- 03: merge conflict -----------------------------------------------------
+setup_03() {
+  local d="$PLAY/03-merge-conflict"; fresh "$d"; cd "$d"
+  git init -q -b main; ident
+  local full a b; full="$(flag VEFJU1B7Y29uZmxpY3RzX2FyZV9qdXN0X2NvbnZlcnNhdGlvbnN9)"; a="${full:0:20}"; b="${full:20}"
+  printf '# Combine both halves into ONE flag line.\nflag = TAISP{??}\n' > vault.txt
+  mg add -A; mg commit -qm "init: vault"
+  mg switch -qc feature/dark-mode
+  printf ':root { --bg: #0d1117; --fg: #e6edf3; }\nbody { background: var(--bg); color: var(--fg); }\n' > style.css
+  printf '# Combine both halves into ONE flag line.\nflag = ??%s\n' "$b" > vault.txt
+  mg add -A; mg commit -qm "feat: dark mode (plus my half of the flag)"
+  mg switch -q main
+  printf '# Combine both halves into ONE flag line.\nflag = %s??\n' "$a" > vault.txt
+  mg add -A; mg commit -qm "docs: my half of the flag"
+  done_msg "$d"
+}
+
+# --- 04: teammate pushed first ----------------------------------------------
+setup_04() {
+  local d="$PLAY/04-teammate-sync"; fresh "$d"
+  git init -q --bare -b main "$d/origin.git"
+  git clone -q "$d/origin.git" "$d/you" 2>/dev/null
+  cd "$d/you"; ident
+  printf 'Day 1 kickoff host: TODO\nLunch: provided\nDay 2 workshop host: TODO\n' > schedule.txt
+  mg add -A; mg commit -qm "init: schedule"; git push -q origin HEAD:main
+  git branch -q -M main; git branch -q --set-upstream-to=origin/main main
+  # your own commit, made locally and not pushed yet
+  printf 'Day 1 kickoff host: %s\nLunch: provided\nDay 2 workshop host: TODO\n' "$(git config user.name)" > schedule.txt
+  git add -A; git commit -qm "Take kickoff"
+  # your teammate pushes to origin before you do
+  local t; t="$(mktemp -d)"
+  git clone -q "$d/origin.git" "$t/teammate" 2>/dev/null
+  ( cd "$t/teammate"
+    printf 'Day 1 kickoff host: TODO\nLunch: provided\nDay 2 workshop host: Sam (flag: %s)\n' "$(flag VEFJU1B7cHVsbF9iZWZvcmVfeW91X3B1c2h9)" > schedule.txt
+    git add -A
+    git -c user.name="Sam (teammate)" -c user.email="teammate@taisp.invalid" -c commit.gpgsign=false commit -qm "Take day 2 workshop"
+    git push -q origin HEAD:main )
+  rm -rf "$t"
+  done_msg "$d/you"
+}
+
+# --- 05: undo and recover (3 flags) -----------------------------------------
+setup_05() {
+  local d="$PLAY/05-undo-and-recover"; fresh "$d"; cd "$d"
+  git init -q -b main; ident
+  mkdir -p site docs
+  printf '<h1>TAISP Mini Hack</h1>\n<nav class="main-nav"><a href="/">Home</a> <a href="/about">About</a> <!-- %s --></nav>\n<p>Build for TAISP.</p>\n' "$(flag VEFJU1B7cmV2ZXJ0X2RvbnRfcmV3cml0ZX0=)" > site/index.html
+  mg add -A; mg commit -qm "init: homepage with nav"
+  printf '# Handover\nPlease keep this safe: %s\n' "$(flag VEFJU1B7aGlzdG9yeV9yZW1lbWJlcnNfZXZlcnl0aGluZ30=)" > docs/handover.md
+  printf '# Old notes\nNothing important.\n' > docs/old-notes.md
+  mg add -A; mg commit -qm "docs: add handover and notes"
+  printf 'API_KEY=%s\n' "$(flag VEFJU1B7Z2l0aWdub3JlX2JlZm9yZV95b3VfY29tbWl0fQ==)" > .env
+  printf 'console.log("weather widget");\n' > site/widget.js
+  mg add -A; mg commit -qm "feat: add weather widget"
+  printf 'API_KEY=REDACTED\n' > .env
+  mg add -A; mg commit -qm "chore: redact the key"
+  printf '<h1>TAISP Mini Hack</h1>\n<p>Build for TAISP.</p>\n' > site/index.html
+  mg add -A; mg commit -qm "style: tweak homepage"
+  printf '<h1>TAISP Mini Hack</h1>\n<p>Build for TAISP.</p>\n<footer>29 to 30 November 2026</footer>\n' > site/index.html
+  mg add -A; mg commit -qm "feat: add footer"
+  mg rm -q docs/handover.md docs/old-notes.md
+  mg commit -qm "chore: clean up docs"
+  done_msg "$d"
+}
+
+# --- 06: the lost commit -----------------------------------------------------
+setup_06() {
+  local d="$PLAY/06-lost-commit"; fresh "$d"; cd "$d"
+  git init -q -b main; ident
+  printf '# Project notes\n' > notes.md
+  mg add -A; mg commit -qm "init: notes"
+  printf 'todo: write tests\n' >> notes.md
+  mg add -A; mg commit -qm "docs: add todo"
+  printf 'result: %s\n' "$(flag VEFJU1B7cmVmbG9nX25ldmVyX2ZvcmdldHN9)" > experiment.txt
+  mg add -A; mg commit -qm "feat: secret experiment"
+  mg reset -q --hard HEAD~1
+  done_msg "$d"
+}
+
+# --- 07: the stashed work ------------------------------------------------------
+setup_07() {
+  local d="$PLAY/07-stashed-work"; fresh "$d"; cd "$d"
+  git init -q -b main; ident
+  printf '# Hackathon project\n' > README.md
+  mg add -A; mg commit -qm "init: readme"
+  printf 'nothing to see here\n' > scratch.txt
+  mg stash push -q -u -m "wip: scratch"
+  printf 'idea: %s\n' "$(flag VEFJU1B7c3Rhc2hfaXRfYXdheX0=)" > wip.txt
+  mg stash push -q -u -m "wip: half-finished idea"
+  done_msg "$d"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./start <id>
+  01  first push (real GitHub)       05  undo and recover
+  02  branch and PR (real GitHub)    06  the lost commit
+  03  merge conflict                 07  the stashed work
+  04  teammate pushed first
+EOF
+}
+
+[ $# -eq 1 ] || { usage; exit 1; }
+id="$(printf '%02d' "$((10#${1//[^0-9]/}))" 2>/dev/null || echo xx)"
+mkdir -p "$PLAY"
+case "$id" in
+  01) setup_github 01 01-first-push ;;
+  02) setup_github 02 02-branch-and-pr ;;
+  03) setup_03 ;;
+  04) setup_04 ;;
+  05) setup_05 ;;
+  06) setup_06 ;;
+  07) setup_07 ;;
+  *) usage; exit 1 ;;
+esac
