@@ -196,6 +196,113 @@ HOOK
   done_msg "$d/you"
 }
 
+# --- 09: "your branch is up to date" (it isn't) ---------------------------------
+setup_09() {
+  local d="$PLAY/09-up-to-date"; fresh "$d"
+  git init -q --bare -b main "$d/origin.git"
+  git clone -q "$d/origin.git" "$d/you" 2>/dev/null
+  cd "$d/you"; ident
+  printf '# Score board\n\nRun the tests: `python3 -m unittest` (or `python -m unittest`)\n' > README.md
+  printf 'Kestrel,42\nHeron,35\nPlover,28\n' > scores.txt
+  printf '__pycache__/\n' > .gitignore
+  cat > scores.py <<'PY'
+def load_scores(path="scores.txt"):
+    """Return {team: score} from a file of 'team,score' lines."""
+    out = {}
+    with open(path) as f:
+        for line in f:
+            team, score = line.strip().split(",")
+            out[team] = int(score)
+    return out
+PY
+  cat > test_scores.py <<'PY'
+import unittest
+from scores import load_scores
+
+
+class TestScores(unittest.TestCase):
+    def test_kestrel(self):
+        self.assertEqual(load_scores()["Kestrel"], 42)
+PY
+  mg add -A; mg commit -qm "init: scores"; git push -q origin HEAD:main
+  git branch -q -M main; git branch -q --set-upstream-to=origin/main main
+  # your feature branch: 2 commits, tests pass
+  git switch -qc feature/score-board
+  cat > board.py <<'PY'
+from scores import load_scores
+
+
+def board(path="scores.txt"):
+    ranked = sorted(load_scores(path).items(), key=lambda kv: -kv[1])
+    return [f"{i}. {team} ({pts})" for i, (team, pts) in enumerate(ranked, 1)]
+
+
+if __name__ == "__main__":
+    print("\n".join(board()))
+PY
+  git add -A; git commit -qm "board: rank teams by score"
+  cat > test_board.py <<'PY'
+import unittest
+from board import board
+
+
+class TestBoard(unittest.TestCase):
+    def test_first_place(self):
+        self.assertEqual(board()[0], "1. Kestrel (42)")
+PY
+  git add -A; git commit -qm "board: add a test"
+  git switch -q main
+  # meanwhile a teammate pushes 3 commits; your origin/main doesn't know yet
+  local t; t="$(mktemp -d)"
+  git clone -q "$d/origin.git" "$t/teammate" 2>/dev/null
+  ( cd "$t/teammate"
+    tg() { git -c user.name="Sam (teammate)" -c user.email="teammate@taisp.invalid" -c commit.gpgsign=false "$@"; }
+    printf 'Osprey,19\n' >> scores.txt
+    tg commit -qam "data: add Osprey"
+    sed -i.bak -e 's/load_scores/read_scores/g' -e 's/Return {team: score}/Read scores.txt into {team: score}/' scores.py test_scores.py
+    rm -f ./*.bak
+    tg commit -qam "refactor: rename load_scores() to read_scores()" -m "Everyone: call read_scores() from now on. load_scores() is gone."
+    printf '\nScores live in scores.txt, one "team,score" per line.\n' >> README.md
+    tg commit -qam "docs: explain scores.txt"
+    git push -q origin HEAD:main )
+  rm -rf "$t"
+  local tb ts; tb="$(git rev-parse feature/score-board:test_board.py)"; ts="$(git -C "$d/origin.git" rev-parse main:test_scores.py)"
+  cat > "$d/origin.git/hooks/pre-receive" <<HOOK
+#!/bin/sh
+while read old new ref; do
+  case "\$ref" in
+    refs/heads/main)
+      echo "main is protected: nobody pushes to it directly."
+      echo "Push your branch feature/score-board instead (it becomes a pull request)."
+      exit 1 ;;
+    refs/heads/feature/score-board)
+      if ! git merge-base --is-ancestor "\$(git rev-parse refs/heads/main)" "\$new"; then
+        echo "Rejected: feature/score-board is missing commits that are on the remote's main."
+        echo "Your copy of the remote (origin/main) is older than you think. Download the newest one, then merge it into your branch."
+        exit 1
+      fi
+      if [ "\$(git rev-parse -q --verify "\$new:test_board.py")" != "$tb" ] || [ "\$(git rev-parse -q --verify "\$new:test_scores.py")" != "$ts" ]; then
+        echo "Rejected: keep the tests (test_board.py and test_scores.py) as they are. Fix the code, not the tests."
+        exit 1
+      fi
+      if git grep -qw load_scores "\$new" -- '*.py'; then
+        echo "Rejected: the merge worked, but the code still uses load_scores(). Your teammate removed it on purpose."
+        echo "Use read_scores() instead, and run the tests after merging: python3 -m unittest"
+        exit 1
+      fi
+      if ! git grep -qw read_scores "\$new" -- board.py; then
+        echo "Rejected: board.py should get its scores from read_scores() in scores.py. Run the tests: python3 -m unittest"
+        exit 1
+      fi
+      echo "feature/score-board is up to date with main and the tests can pass. Flag: \$(printf %s 'VEFJU1B7ZmV0Y2hfYmVmb3JlX3lvdV90cnVzdF9zdGF0dXN9' | base64 -d)" ;;
+  esac
+done
+exit 0
+HOOK
+  chmod 755 "$d/origin.git/hooks/pre-receive"
+  done_msg "$d/you"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./start <id>
@@ -203,6 +310,7 @@ Usage: ./start <id>
   02  branch and PR (real GitHub)    06  the lost commit
   03  merge conflict                 07  the stashed work
   04  teammate pushed first          08  committed on main
+                                     09  "your branch is up to date"
 EOF
 }
 
@@ -218,5 +326,6 @@ case "$id" in
   06) setup_06 ;;
   07) setup_07 ;;
   08) setup_08 ;;
+  09) setup_09 ;;
   *) usage; exit 1 ;;
 esac

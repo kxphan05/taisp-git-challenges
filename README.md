@@ -25,6 +25,7 @@ Stuck or broken? Run `./start 03` again to get a fresh copy.
 | 06 | the lost commit |
 | 07 | the stashed work |
 | 08 | committed on main by mistake |
+| 09 | "your branch is up to date" |
 
 **Windows:** run these in *Git Bash* (installed with Git for Windows).
 Reading the `start` script will spoil the challenges. The reps are the point.
