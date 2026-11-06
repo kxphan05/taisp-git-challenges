@@ -31,6 +31,7 @@ Stuck or broken? Run `./start 03` again to get a fresh copy.
 | 12 | the too-good AI fix |
 | 13 | Claude went wild |
 | 14 | Claude force-pushed |
+| 15 | the README that talks to Claude |
 
 **Windows:** run these in *Git Bash* (installed with Git for Windows).
 Reading the `start` script will spoil the challenges. The reps are the point.
