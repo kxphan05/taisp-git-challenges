@@ -447,6 +447,146 @@ HOOK
   done_msg "$d/you"
 }
 
+# --- 11: "All done!" (Claude's summary vs the actual diff) ---------------------
+setup_11() {
+  local d="$PLAY/11-all-done"; fresh "$d"
+  git init -q --bare -b main "$d/origin.git"
+  local t; t="$(mktemp -d)"
+  git clone -q "$d/origin.git" "$t/w" 2>/dev/null
+  ( cd "$t/w"
+    cg() { git -c user.name="Claude (AI)" -c user.email="claude@taisp.invalid" -c commit.gpgsign=false "$@"; }
+    printf '# Team app\n\nRun it: `python3 app.py`\n' > README.md
+    printf '__pycache__/\n' > .gitignore
+    printf 'def home():\n    return "Welcome!"\n\n\nif __name__ == "__main__":\n    print(home())\n' > app.py
+    cat > REQUEST.md <<'MD'
+# What I asked Claude Code
+
+> Add login to the team app, on a branch called claude/add-login:
+> - at most 5 login tries per user
+> - hash passwords with scrypt, like this:
+>   `return hashlib.scrypt(password.encode(), salt=b"taisp", n=2**14, r=8, p=1).hex()`
+> - a logout() function
+> - tests for login in test_login.py
+> - a line in README.md on how to log in
+> - no debug prints
+MD
+    cat > REVIEW.md <<'MD'
+# Review of claude/add-login
+
+Is each claim in Claude's summary true for **Claude's commit** (before any fixes of yours)?
+Check the code, not the message. Replace each `?` with `true` or `false`.
+
+| # | Claude's claim | true or false |
+|---|----------------|---------------|
+| 1 | Added a limit of 5 login tries per user | ? |
+| 2 | Passwords are hashed with hashlib.scrypt | ? |
+| 3 | Added logout() | ? |
+| 4 | Added tests for login in test_login.py | ? |
+| 5 | Updated README.md with how to log in | ? |
+| 6 | Removed all debug prints | ? |
+MD
+    mg add -A; mg commit -qm "init: team app, request and review template"
+    git branch -q -M main; git push -q origin main
+    cg switch -qc claude/add-login
+    cat > login.py <<'PY'
+"""Login for the team app."""
+import hashlib
+
+MAX_TRIES = 5
+TRIES = {}
+USERS = {}  # user -> password hash
+
+
+def hash_password(password):
+    # TODO: switch to scrypt later
+    return hashlib.md5(password.encode()).hexdigest()
+
+
+def register(user, password):
+    USERS[user] = hash_password(password)
+
+
+def login(user, password):
+    TRIES[user] = TRIES.get(user, 0) + 1
+    if TRIES[user] > MAX_TRIES:
+        raise PermissionError("too many tries, wait a minute")
+    print("login attempt:", user, password)
+    return USERS.get(user) == hash_password(password)
+
+
+def logout(user):
+    TRIES.pop(user, None)
+PY
+    cat > test_login.py <<'PY'
+import unittest
+import login
+
+
+class TestLogin(unittest.TestCase):
+    def test_login(self):
+        self.assertTrue(True)
+PY
+    cg add -A
+    cg commit -qm "Add login with rate limiting and logout" -m "All done! ✅ Here's what I changed:
+- Added a limit of 5 login tries per user
+- Passwords are hashed with hashlib.scrypt
+- Added logout()
+- Added tests for login in test_login.py
+- Updated README.md with how to log in
+- Removed all debug prints"
+    cg push -q origin claude/add-login )
+  rm -rf "$t"
+  git clone -q "$d/origin.git" "$d/you" 2>/dev/null
+  cd "$d/you"; ident
+  cat > "$d/origin.git/hooks/pre-receive" <<'HOOK'
+#!/bin/sh
+while read old new ref; do
+  case "$ref" in
+    refs/heads/main)
+      echo "main is protected: nobody pushes to it directly."
+      echo "Push your review and fixes to claude/add-login instead."
+      exit 1 ;;
+    refs/heads/claude/add-login)
+      ans="$(git show "$new:REVIEW.md" 2>/dev/null | tr -d '\r' | awk -F'|' '
+        /^[ \t]*\|[ \t]*[1-6][ \t]*\|/ { v = tolower($4); gsub(/^[ \t`*]+/, "", v); split(v, a, /[^a-z]/); printf "%s", substr(a[1], 1, 1) }')"
+      case "$ans" in
+        *[!tf]*|"") ok=0 ;;
+        *) ok=1 ;;
+      esac
+      if [ "$ok" = 0 ] || [ "${#ans}" != 6 ]; then
+        echo "Rejected: fill in every row of REVIEW.md with true or false (all 6), then commit it."
+        echo "Keep the table shape: each row must look like  | 1 | the claim | true |  (with all the | marks)."
+        exit 1
+      fi
+      if [ "$ans" != "tftfff" ]; then
+        echo "Rejected: at least one row in REVIEW.md is wrong. Don't trust the summary: check each claim in Claude's commit."
+        echo "Which files did the commit really change? What do those files really say?"
+        exit 1
+      fi
+      l="$(git show "$new:login.py" 2>/dev/null | tr -d '\r')"
+      for want in 'MAX_TRIES' 'def login' 'def logout' 'def register'; do
+        if ! printf '%s\n' "$l" | grep -q "$want"; then
+          echo "Rejected: your review is right, but keep Claude's good work in login.py ($want is gone)."
+          exit 1
+        fi
+      done
+      if printf '%s\n' "$l" | grep -q 'md5' || ! printf '%s\n' "$l" | grep -q 'hashlib\.scrypt('; then
+        echo "Rejected: your review is right. Now fix claim 2: login.py must hash with hashlib.scrypt (see REQUEST.md), not md5."
+        exit 1
+      fi
+      if printf '%s\n' "$l" | grep -q 'print'; then
+        echo "Rejected: your review is right. Now fix claim 6: login.py still prints passwords. Remove the debug print."
+        exit 1
+      fi
+      echo "Review done: you checked the code, not the summary, and fixed the password problems. Flag: $(printf %s 'VEFJU1B7YV9zdW1tYXJ5X2lzX25vdF9hX2RpZmZ9' | base64 -d)" ;;
+  esac
+done
+exit 0
+HOOK
+  chmod 755 "$d/origin.git/hooks/pre-receive"
+  done_msg "$d/you"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./start <id>
@@ -456,6 +596,7 @@ Usage: ./start <id>
   04  teammate pushed first          08  committed on main
                                      09  "your branch is up to date"
                                      10  review a teammate's branch
+                                     11  "All done!" (check Claude's summary)
 EOF
 }
 
@@ -473,5 +614,6 @@ case "$id" in
   08) setup_08 ;;
   09) setup_09 ;;
   10) setup_10 ;;
+  11) setup_11 ;;
   *) usage; exit 1 ;;
 esac
