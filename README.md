@@ -29,6 +29,7 @@ Stuck or broken? Run `./start 03` again to get a fresh copy.
 | 10 | review a teammate's branch |
 | 11 | "All done!" (check Claude's summary) |
 | 12 | the too-good AI fix |
+| 13 | Claude went wild |
 
 **Windows:** run these in *Git Bash* (installed with Git for Windows).
 Reading the `start` script will spoil the challenges. The reps are the point.

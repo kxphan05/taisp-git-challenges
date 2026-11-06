@@ -690,6 +690,149 @@ HOOK
   done_msg "$d/you"
 }
 
+# --- 13: Claude went wild (keep only what you asked for) -------------------------
+setup_13() {
+  local d="$PLAY/13-claude-went-wild"; fresh "$d"
+  git init -q --bare -b main "$d/origin.git"
+  git clone -q "$d/origin.git" "$d/you" 2>/dev/null
+  cd "$d/you"; ident
+  mkdir -p tests
+  printf '__pycache__/\n' > .gitignore
+  printf 'flask==3.0.3\n' > requirements.txt
+  cat > routes.py <<'PY'
+"""Which function answers which web address."""
+from pages import home, about
+
+ROUTES = {
+    "/": home,
+    "/about": about,
+}
+PY
+  cat > pages.py <<'PY'
+def home():
+    return "Welcome to the team app!"
+
+
+def about():
+    return "Made at the TAISP Mini Hack."
+PY
+  cat > utils.py <<'PY'
+def check_password(user, password, users):
+    return users.get(user) == password
+
+
+def clean_name(name):
+    return name.strip().lower()
+PY
+  cat > tests/test_auth.py <<'PY'
+import unittest
+from utils import check_password, clean_name
+
+
+class TestAuth(unittest.TestCase):
+    def test_password(self):
+        self.assertTrue(check_password("ana", "pw", {"ana": "pw"}))
+        self.assertFalse(check_password("ana", "nope", {"ana": "pw"}))
+
+    def test_clean_name(self):
+        self.assertEqual(clean_name("  Ana "), "ana")
+PY
+  mg add -A; mg commit -qm "init: team app"; git push -q origin HEAD:main
+  git branch -q -M main; git branch -q --set-upstream-to=origin/main main
+  git switch -qc feature/health
+  cat > REQUEST.md <<'MD'
+# What I asked Claude Code
+
+> Add a /health page that returns "ok", so we can check the app is up.
+> Only that, please.
+MD
+  git add -A; git commit -qm "checkpoint before asking Claude"
+  git push -q -u origin feature/health 2>/dev/null
+  # --- what "Claude" did next (not committed) ---
+  printf 'def health():\n    return "ok"\n' > health.py
+  cat > routes.py <<'PY'
+"""Which function answers which web address."""
+from pages import home, about
+from health import health
+
+ROUTES = {
+    "/": home,
+    "/about": about,
+    "/health": health,
+}
+PY
+  local rh hh; rh="$(git hash-object routes.py)"; hh="$(git hash-object health.py)"
+  local uh qh th; uh="$(git hash-object utils.py)"; qh="$(git hash-object requirements.txt)"; th="$(git hash-object tests/test_auth.py)"
+  cat > utils.py <<'PY'
+def check_password( user,password,users ):
+    return users.get( user )==password
+def clean_name( name ):
+    return name.strip( ).lower( )
+PY
+  printf 'flask==9.9.9\n' > requirements.txt
+  rm tests/test_auth.py
+  cat > notes_claude.md <<'MD'
+# My notes (Claude)
+
+- Added /health (health.py + 2 lines in routes.py).
+- Also tidied utils.py while I was there.
+- Upgraded flask to the newest version.
+- Deleted tests/test_auth.py because it was in the way.
+MD
+  cat > "$d/origin.git/hooks/pre-receive" <<HOOK
+#!/bin/sh
+no() {
+  echo "Rejected: \$1"
+  echo "(Committed too early? 'git reset origin/feature/health' undoes your commits but keeps your files as they are now. Then clean up and commit again.)"
+  exit 1
+}
+nh() { git show "\$new:\$1" 2>/dev/null | tr -d '\r' | git hash-object --stdin; }
+while read old new ref; do
+  case "\$ref" in
+    refs/heads/main)
+      echo "main is protected: nobody pushes to it directly."
+      echo "Push your cleaned-up work to feature/health instead."
+      exit 1 ;;
+    refs/heads/feature/health)
+      if git cat-file -e "\$new:notes_claude.md" 2>/dev/null; then
+        no "notes_claude.md is Claude's scratch file. You didn't ask for it."
+      fi
+      if ! git cat-file -e "\$new:tests/test_auth.py" 2>/dev/null || [ "\$(nh tests/test_auth.py)" != "$th" ]; then
+        no "tests/test_auth.py must be back, exactly as it was before Claude deleted it."
+      fi
+      if [ "\$(nh utils.py)" != "$uh" ]; then
+        no "utils.py has changes you didn't ask for. Put it back how it was."
+      fi
+      if [ "\$(nh requirements.txt)" != "$qh" ]; then
+        no "requirements.txt has changes you didn't ask for. Put it back how it was."
+      fi
+      if [ "\$(nh health.py)" != "$hh" ]; then
+        no "health.py is missing or changed. That's the part you asked for: keep Claude's version."
+      fi
+      if [ "\$(nh routes.py)" != "$rh" ]; then
+        no "routes.py must keep Claude's 2 new /health lines (and nothing else changed)."
+      fi
+      files="\$(git ls-tree -r --name-only "\$new" | tr '\n' ' ')"
+      if [ "\$files" != ".gitignore REQUEST.md health.py pages.py requirements.txt routes.py tests/test_auth.py utils.py " ]; then
+        no "your branch has extra files you didn't ask for: \$files"
+      fi
+      dirty="\$(env -u GIT_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH -u GIT_INDEX_FILE \\
+        git --git-dir=../you/.git --work-tree=../you status --porcelain 2>/dev/null)"
+      if [ -n "\$dirty" ]; then
+        echo "Your commit is right, but Claude's other changes are still in your folder:"
+        printf '%s\\n' "\$dirty" | sed 's/^/    /'
+        echo "Undo them too, until 'git status' says 'nothing to commit, working tree clean'. Then push again."
+        exit 1
+      fi
+      echo "Clean: only the /health change made it in. Flag: \$(printf %s 'VEFJU1B7Y2hlY2twb2ludF90aGVuX2tlZXBfdGhlX2dvb2R9' | base64 -d)" ;;
+  esac
+done
+exit 0
+HOOK
+  chmod 755 "$d/origin.git/hooks/pre-receive"
+  done_msg "$d/you"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./start <id>
@@ -701,6 +844,7 @@ Usage: ./start <id>
                                      10  review a teammate's branch
                                      11  "All done!" (check Claude's summary)
                                      12  the too-good AI fix
+                                     13  Claude went wild
 EOF
 }
 
@@ -720,5 +864,6 @@ case "$id" in
   10) setup_10 ;;
   11) setup_11 ;;
   12) setup_12 ;;
+  13) setup_13 ;;
   *) usage; exit 1 ;;
 esac
