@@ -833,6 +833,155 @@ HOOK
   done_msg "$d/you"
 }
 
+# --- 14: Claude force-pushed (put the teammate's commits back) -------------------
+setup_14() {
+  local d="$PLAY/14-claude-force-pushed"; fresh "$d"
+  git init -q --bare -b main "$d/origin.git"
+  git clone -q "$d/origin.git" "$d/you" 2>/dev/null
+  cd "$d/you"; ident
+  mkdir -p .claude
+  printf '# Room booking\n\nRun the tests: `python3 -m unittest` (or `python -m unittest`)\n' > README.md
+  printf '__pycache__/\n' > .gitignore
+  printf '{\n  "permissions": {\n    "deny": []\n  }\n}\n' > .claude/settings.json
+  printf 'room,seats\nLab A,20\nLab B,12\n' > rooms.csv
+  cat > search.py <<'PY'
+import csv
+
+
+def rooms(path="rooms.csv"):
+    with open(path) as f:
+        return list(csv.DictReader(f))
+
+
+def big_rooms(n):
+    """Rooms with at least n seats."""
+    return [r["room"] for r in rooms() if int(r["seats"]) >= n]
+PY
+  cat > book.py <<'PY'
+BOOKINGS = {}  # (room, slot) -> who
+
+
+def book(room, slot, who):
+    BOOKINGS[(room, slot)] = who
+    return True
+PY
+  cat > test_book.py <<'PY'
+import unittest
+from book import book, BOOKINGS
+
+
+class TestBook(unittest.TestCase):
+    def setUp(self):
+        BOOKINGS.clear()
+
+    def test_book(self):
+        self.assertTrue(book("Lab A", "10:00", "Ana"))
+PY
+  mg add -A; mg commit -qm "init: room booking"; git push -q origin HEAD:main
+  git branch -q -M main; git branch -q --set-upstream-to=origin/main main
+  # last night: Bo pushes 2 commits
+  local t; t="$(mktemp -d)"
+  git clone -q "$d/origin.git" "$t/bo" 2>/dev/null
+  ( cd "$t/bo"
+    bg() { git -c user.name="Bo (teammate)" -c user.email="bo@taisp.invalid" -c commit.gpgsign=false "$@"; }
+    printf 'Lab C,30\nSeminar 1,8\nSeminar 2,8\nHall,120\nStudio,6\nMeeting Pod,4\n' >> rooms.csv
+    bg commit -qam "rooms: add every room in the building"
+    cat > book.py <<'PY'
+BOOKINGS = {}  # (room, slot) -> who
+
+
+def book(room, slot, who):
+    if (room, slot) in BOOKINGS:
+        return False  # already taken: don't steal someone else's booking
+    BOOKINGS[(room, slot)] = who
+    return True
+PY
+    cat >> test_book.py <<'PY'
+
+    def test_no_double_booking(self):
+        book("Lab A", "10:00", "Ana")
+        self.assertFalse(book("Lab A", "10:00", "Bo"))
+        self.assertEqual(BOOKINGS[("Lab A", "10:00")], "Ana")
+PY
+    bg commit -qam "book: fix double booking"
+    git push -q origin HEAD:main )
+  rm -rf "$t"
+  # this morning: your Claude Code session (replayed for real)
+  cg() { git -c user.name="Claude (AI)" -c user.email="claude@taisp.invalid" -c commit.gpgsign=false "$@"; }
+  cat >> search.py <<'PY'
+
+
+def find(name):
+    """Rooms whose name contains name (any case)."""
+    return [r["room"] for r in rooms() if name.lower() in r["room"].lower()]
+PY
+  local o1 o2 o3 o4
+  o1="$(cg commit -am "search: find rooms by name" 2>&1)"
+  o2="$(git push 2>&1 || true)"
+  o3="$(git fetch 2>&1)"
+  o4="$(git push --force 2>&1)"
+  local bo cl; bo="$(git rev-parse 'origin/main@{1}')"; cl="$(git rev-parse HEAD)"
+  [ "$(git rev-parse origin/main)" = "$cl" ] && [ "$(git -C "$d/origin.git" rev-parse main)" = "$cl" ] || { echo "14: replay failed"; exit 1; }
+  ind() { printf '%s\n' "$1" | sed -e '1s/^/  ⎿ /' -e '2,$s/^/    /'; }
+  { printf '# Claude Code session (this morning)\n\n```\n'
+    printf '> add a search by room name to search.py, then commit and push\n\n'
+    printf '● Update(search.py)\n  ⎿ Added find(name)\n\n'
+    printf '● Bash(git commit -am "search: find rooms by name")\n'; ind "$o1"
+    printf '\n● Bash(git push)\n'; ind "$o2"
+    printf '\n● The push was rejected. Let me fetch and resolve that.\n\n● Bash(git fetch)\n'; ind "${o3:-(no output)}"
+    printf '\n● Bash(git push --force)\n'; ind "$o4"
+    printf '\n● Done! ✅ search.py now has find(name), and it is pushed to main.\n```\n'
+  } > CLAUDE_SESSION.md
+  # the admin locks main after the incident
+  git -C "$d/origin.git" config receive.denyNonFastForwards true
+  local bb bt br bs; bb="$(git rev-parse "$bo:book.py")"; bt="$(git rev-parse "$bo:test_book.py")"
+  br="$(git rev-parse "$bo:rooms.csv")"; bs="$(git rev-parse "$cl:search.py")"
+  cat > "$d/origin.git/hooks/pre-receive" <<HOOK
+#!/bin/sh
+nh() { git show "\$new:\$1" 2>/dev/null | tr -d '\r' | git hash-object --stdin; }
+while read old new ref; do
+  case "\$ref" in
+    refs/heads/main)
+      if ! git merge-base --is-ancestor "\$old" "\$new"; then
+        echo "Rejected: that push would overwrite main again (a force push), and the admin has locked main against that."
+        echo "Add to main instead: merge what's missing into your main, then a normal 'git push'."
+        exit 1
+      fi
+      if ! git merge-base --is-ancestor $bo "\$new"; then
+        echo "Rejected: Bo's 2 commits are still missing from main."
+        echo "They are still on your computer. CLAUDE_SESSION.md shows the push that removed them: find their id and merge it."
+        echo "(Copies made by cherry-pick or by copying files get new ids, so they don't count.)"
+        exit 1
+      fi
+      if [ "\$(nh book.py)" != "$bb" ] || [ "\$(nh test_book.py)" != "$bt" ] || [ "\$(nh rooms.csv)" != "$br" ] || [ "\$(nh search.py)" != "$bs" ]; then
+        echo "Rejected: keep Bo's files and Claude's search.py exactly as they were in their commits. Merge, don't retype."
+        exit 1
+      fi
+      s="\$(git show "\$new:.claude/settings.json" 2>/dev/null | tr -d '\r')"
+      if printf '%s\n' "\$s" | grep -Eq '"Bash\(git push( ?\*|:\*)?\)"'; then
+        echo "Rejected: Bo's work is back, but that rule blocks every git push, so Claude can't even push normally."
+        echo "Deny only the force versions: git push --force and git push -f."
+        exit 1
+      fi
+      dn="\$(printf '%s\n' "\$s" | tr '\n' ' ' | grep -o '"deny"[[:space:]]*:[[:space:]]*\[[^]]*\]')"
+      miss=""
+      printf '%s\n' "\$dn" | grep -q 'Bash(git push --force' || miss="\$miss 'git push --force'"
+      printf '%s\n' "\$dn" | grep -q 'Bash(git push -f' || miss="\$miss 'git push -f'"
+      if [ -n "\$miss" ]; then
+        echo "Rejected: Bo's work is back. Now stop it happening again: in .claude/settings.json, add deny rules"
+        echo "for both 'git push --force' and 'git push -f', and commit the file. Still missing:\$miss"
+        echo "Claude rules look like \"Bash(git push --force:*)\" inside \"permissions\": { \"deny\": [ ... ] }."
+        exit 1
+      fi
+      echo "Bo's work is back, nothing was overwritten, and Claude can't force-push again. Tell Bo! Flag: \$(printf %s 'VEFJU1B7bWVyZ2VfYmFja19uZXZlcl9mb3JjZV9iYWNrfQ==' | base64 -d)" ;;
+  esac
+done
+exit 0
+HOOK
+  chmod 755 "$d/origin.git/hooks/pre-receive"
+  done_msg "$d/you"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./start <id>
@@ -845,6 +994,7 @@ Usage: ./start <id>
                                      11  "All done!" (check Claude's summary)
                                      12  the too-good AI fix
                                      13  Claude went wild
+                                     14  Claude force-pushed
 EOF
 }
 
@@ -865,5 +1015,6 @@ case "$id" in
   11) setup_11 ;;
   12) setup_12 ;;
   13) setup_13 ;;
+  14) setup_14 ;;
   *) usage; exit 1 ;;
 esac
