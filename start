@@ -303,6 +303,150 @@ HOOK
   done_msg "$d/you"
 }
 
+# --- 10: review the teammate's branch ------------------------------------------
+scores_10() {  # $1 = old/new (before/after main's fix), $2 = DEBUG line, $3 = VERIFY_SIG line, $4 = 1 to add top_n()
+local lim='ALLOW_NEGATIVE = True
+MAX_SCORE = 1000'
+[ "$1" = new ] && lim='ALLOW_NEGATIVE = False  # people were submitting -999 to rivals
+MAX_SCORE = 100'
+cat <<PY
+"""Score submissions for the hackathon leaderboard."""
+import hashlib
+import hmac
+
+SECRET = b"taisp-mini-hack"
+$lim
+
+
+def sign(team, points):
+    return hmac.new(SECRET, f"{team}:{points}".encode(), hashlib.sha256).hexdigest()
+
+
+# settings
+$2
+$3
+
+
+def submit(scores, team, points, sig):
+    if VERIFY_SIG and not hmac.compare_digest(sig, sign(team, points)):
+        raise ValueError("bad signature")
+    if points < 0 and not ALLOW_NEGATIVE:
+        raise ValueError("negative score")
+    if points > MAX_SCORE:
+        raise ValueError("score too high")
+    if DEBUG:
+        print("submit", team, points)
+    scores[team] = scores.get(team, 0) + points
+PY
+if [ "$4" = 1 ]; then cat <<'PY'
+
+
+def top_n(scores, n=10):
+    return sorted(scores.items(), key=lambda kv: -kv[1])[:n]
+PY
+fi
+}
+setup_10() {
+  local d="$PLAY/10-review-branch"; fresh "$d"
+  git init -q --bare -b main "$d/origin.git"
+  local t; t="$(mktemp -d)"
+  git clone -q "$d/origin.git" "$t/w" 2>/dev/null
+  ( cd "$t/w"
+    ag() { git -c user.name="Alex (teammate)" -c user.email="alex@taisp.invalid" -c commit.gpgsign=false "$@"; }
+    sg() { git -c user.name="Sam (teammate)" -c user.email="teammate@taisp.invalid" -c commit.gpgsign=false "$@"; }
+    printf '# Hackathon score board\n\nTeams submit signed scores through `scores.py`.\n' > README.md
+    printf '__pycache__/\n' > .gitignore
+    printf 'TRIES = {}\n\n\ndef login(user, password, check):\n    return check(user, password)\n' > login.py
+    scores_10 old 'DEBUG = True' 'VERIFY_SIG = True' 0 > scores.py
+    mg add -A; mg commit -qm "init: score board"
+    git branch -q -M main; git push -q origin main
+    # Alex's branch (built with Claude)
+    ag switch -qc feature/leaderboard
+    mkdir -p templates
+    printf 'from scores import top_n\n\n\ndef leaderboard(scores):\n    return [f"{i}. {team}: {pts}" for i, (team, pts) in enumerate(top_n(scores), 1)]\n' > leaderboard.py
+    printf '<h1>Leaderboard</h1>\n<ol>\n{%% for row in rows %%}<li>{{ row }}</li>{%% endfor %%}\n</ol>\n' > templates/leaderboard.html
+    ag add -A; ag commit -qm "leaderboard: add page and template"
+    scores_10 old 'DEBUG = False' 'VERIFY_SIG = False' 1 > scores.py
+    ag commit -qam "scores: add top_n() for the leaderboard"
+    printf '\nThe leaderboard page lives in `leaderboard.py`.\n' >> README.md
+    ag commit -qam "docs: mention the leaderboard"
+    ag push -q origin feature/leaderboard
+    # meanwhile main moves on (Sam's work, not Alex's)
+    sg switch -q main
+    printf 'MAX_TRIES = 5\nTRIES = {}\n\n\ndef login(user, password, check):\n    TRIES[user] = TRIES.get(user, 0) + 1\n    if TRIES[user] > MAX_TRIES:\n        raise PermissionError("too many tries, wait a minute")\n    return check(user, password)\n' > login.py
+    sg commit -qam "fix: rate-limit login attempts"
+    scores_10 new 'DEBUG = True' 'VERIFY_SIG = True' 0 > scores.py
+    sg commit -qam "fix: block negative and huge scores"
+    printf '# Contributing\n\nWork on a branch and ask a teammate to review it before merging.\n' > CONTRIBUTING.md
+    printf 'from scores import submit\n\nSCORES = {}\n\n\ndef post_score(team, points, sig):\n    submit(SCORES, team, points, sig)\n    return {"ok": True}\n' > api.py
+    sg add -A; sg commit -qm "feat: add api.py and CONTRIBUTING.md"
+    sg push -q origin main )
+  rm -rf "$t"
+  git clone -q "$d/origin.git" "$d/you" 2>/dev/null
+  cd "$d/you"; ident
+  # what an approved scores.py may look like, ignoring the VERIFY_SIG line: Alex's as is, or with main merged in
+  local sa sb
+  sa="$(scores_10 old 'DEBUG = False' 'VERIFY_SIG = x' 1 | grep -v '^VERIFY_SIG' | git hash-object --stdin)"
+  sb="$(scores_10 new 'DEBUG = False' 'VERIFY_SIG = x' 1 | grep -v '^VERIFY_SIG' | git hash-object --stdin)"
+  local keep=""
+  for f in leaderboard.py templates/leaderboard.html README.md; do keep="$keep $f:$(git rev-parse "origin/feature/leaderboard:$f")"; done
+  cat > "$d/origin.git/hooks/pre-receive" <<HOOK
+#!/bin/sh
+while read old new ref; do
+  case "\$ref" in
+    refs/heads/main)
+      echo "main is protected: nobody pushes to it directly."
+      echo "Push your fix to feature/leaderboard instead."
+      exit 1 ;;
+    refs/heads/feature/leaderboard)
+      fork="\$(git merge-base refs/heads/main "\$new")"
+      for f in \$(git diff --name-only "\$fork" "\$new"); do
+        case "\$f" in
+          leaderboard.py|templates/leaderboard.html|README.md|scores.py) ;;
+          *)
+            if git diff --quiet "\$fork" refs/heads/main -- "\$f"; then
+              echo "Rejected: you changed \$f. Alex's branch never touched it, so leave it alone."
+            else
+              echo "Rejected: you changed \$f, but Alex's branch never touched it."
+              echo "That change is main's (a teammate's work after Alex's branch split off). Which diff did you read?"
+            fi
+            exit 1 ;;
+        esac
+      done
+      for kv in$keep; do
+        if [ "\$(git rev-parse -q --verify "\$new:\${kv%%:*}")" != "\${kv#*:}" ]; then
+          echo "Rejected: keep Alex's work in \${kv%%:*} as it is. Only fix the one line that must not be merged."
+          exit 1
+        fi
+      done
+      s="\$(git show "\$new:scores.py" 2>/dev/null | tr -d '\r')"
+      if printf '%s\n' "\$s" | grep -q '^DEBUG *= *True'; then
+        echo "Rejected: switching debug output off is harmless. Look for a change that switches off a safety check."
+        exit 1
+      fi
+      if ! git merge-base --is-ancestor refs/heads/main "\$new" && printf '%s\n' "\$s" | grep -qE '^(ALLOW_NEGATIVE *= *False|MAX_SCORE *= *100\b)'; then
+        echo "Rejected: you changed a line in scores.py that Alex never changed. main changed it after Alex's branch split off,"
+        echo "and merging won't undo main's work. Which diff did you read? Look only at what the branch changed since the split."
+        exit 1
+      fi
+      if ! printf '%s\n' "\$s" | grep -q '^VERIFY_SIG *= *True'; then
+        echo "Rejected: one line Alex changed must not be merged into main. Read what the branch changed since it split off, then fix that line."
+        exit 1
+      fi
+      h="\$(printf '%s\n' "\$s" | grep -v '^VERIFY_SIG' | git hash-object --stdin)"
+      if [ "\$h" != "$sa" ] && [ "\$h" != "$sb" ]; then
+        echo "Rejected: in scores.py change only the one line that must not be merged. Keep the rest of Alex's changes."
+        exit 1
+      fi
+      echo "Review done: signatures are checked again and Alex's leaderboard is safe to merge. Flag: \$(printf %s 'VEFJU1B7dGhyZWVfZG90c19zaW5jZV90aGVfc3BsaXR9' | base64 -d)" ;;
+  esac
+done
+exit 0
+HOOK
+  chmod 755 "$d/origin.git/hooks/pre-receive"
+  done_msg "$d/you"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./start <id>
@@ -311,6 +455,7 @@ Usage: ./start <id>
   03  merge conflict                 07  the stashed work
   04  teammate pushed first          08  committed on main
                                      09  "your branch is up to date"
+                                     10  review a teammate's branch
 EOF
 }
 
@@ -327,5 +472,6 @@ case "$id" in
   07) setup_07 ;;
   08) setup_08 ;;
   09) setup_09 ;;
+  10) setup_10 ;;
   *) usage; exit 1 ;;
 esac
