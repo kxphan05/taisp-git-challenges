@@ -149,13 +149,60 @@ setup_07() {
   done_msg "$d"
 }
 
+# --- 08: committed on main by mistake -----------------------------------------
+setup_08() {
+  local d="$PLAY/08-committed-on-main"; fresh "$d"
+  git init -q --bare -b main "$d/origin.git"
+  git clone -q "$d/origin.git" "$d/you" 2>/dev/null
+  cd "$d/you"; ident
+  printf '# Team app\n\nRule: `main` is protected. Work on a branch, push the branch, open a PR.\n' > README.md
+  printf 'def home():\n    return "Welcome!"\n' > app.py
+  mg add -A; mg commit -qm "init: team app"; git push -q origin HEAD:main
+  git branch -q -M main; git branch -q --set-upstream-to=origin/main main
+  # your 3 commits, made on main by mistake
+  printf 'def login(user, password):\n    return False\n' > login.py
+  git add -A; git commit -qm "login: add login()"
+  printf 'USERS = {"admin": "hunter2"}\n\ndef login(user, password):\n    return USERS.get(user) == password\n' > login.py
+  git add -A; git commit -qm "login: check the password"
+  printf '\nLogin: see login.py\n' >> README.md
+  git add -A; git commit -qm "docs: mention login"
+  local tree; tree="$(git rev-parse 'HEAD^{tree}')"
+  # the remote protects main, like GitHub branch protection
+  cat > "$d/origin.git/hooks/pre-receive" <<HOOK
+#!/bin/sh
+while read old new ref; do
+  case "\$ref" in
+    refs/heads/main)
+      echo "main is protected: nobody pushes to it directly."
+      echo "Put your commits on a branch called feature/login and push that branch instead."
+      exit 1 ;;
+    refs/heads/feature/login)
+      if [ "\$(git rev-parse "\$new^{tree}" 2>/dev/null)" != "$tree" ]; then
+        echo "feature/login is missing some of your 3 login commits."; exit 1
+      fi
+      mine="\$(env -u GIT_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH \\
+        git --git-dir=../you/.git rev-parse -q --verify refs/heads/main)"
+      if [ "\$mine" != "\$(git rev-parse refs/heads/main)" ]; then
+        echo "Not yet: your local main still has the login commits."
+        echo "Make your local main match origin/main ('git status' on main says 'up to date'), then push again."
+        exit 1
+      fi
+      echo "feature/login received and main is clean. Flag: \$(printf %s 'VEFJU1B7YnJhbmNoX2ZpcnN0X3RoZW5fcmVzZXR9' | base64 -d)" ;;
+  esac
+done
+exit 0
+HOOK
+  chmod 755 "$d/origin.git/hooks/pre-receive"
+  done_msg "$d/you"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./start <id>
   01  first push (real GitHub)       05  undo and recover
   02  branch and PR (real GitHub)    06  the lost commit
   03  merge conflict                 07  the stashed work
-  04  teammate pushed first
+  04  teammate pushed first          08  committed on main
 EOF
 }
 
@@ -170,5 +217,6 @@ case "$id" in
   05) setup_05 ;;
   06) setup_06 ;;
   07) setup_07 ;;
+  08) setup_08 ;;
   *) usage; exit 1 ;;
 esac
