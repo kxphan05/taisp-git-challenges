@@ -587,6 +587,109 @@ HOOK
   done_msg "$d/you"
 }
 
+# --- 12: the too-good AI fix ("all tests pass!") -------------------------------
+setup_12() {
+  local d="$PLAY/12-too-good-fix"; fresh "$d"
+  git init -q --bare -b main "$d/origin.git"
+  local t; t="$(mktemp -d)"
+  git clone -q "$d/origin.git" "$t/w" 2>/dev/null
+  ( cd "$t/w"
+    cg() { git -c user.name="Claude (AI)" -c user.email="claude@taisp.invalid" -c commit.gpgsign=false "$@"; }
+    printf '# Open day tickets\n\nRun the tests: `python3 -m unittest` (or `python -m unittest`)\n' > README.md
+    printf '__pycache__/\n' > .gitignore
+    cat > tickets.py <<'PY'
+"""Ticket prices for the hackathon open day."""
+
+
+def price(age):
+    """Ticket price in dollars.
+
+    - under 2: free (0)
+    - under 12: half price (5)
+    - 65 and over: half price (5)
+    - everyone else: full price (10)
+    """
+    if age < 12:
+        return 5
+    if age > 65:
+        return 5
+    return 10
+PY
+    cat > test_tickets.py <<'PY'
+import unittest
+from tickets import price
+
+
+class TestPrice(unittest.TestCase):
+    def test_adult(self):
+        self.assertEqual(price(30), 10)
+
+    def test_child(self):
+        self.assertEqual(price(8), 5)
+
+    def test_senior(self):
+        self.assertEqual(price(65), 5)
+        self.assertEqual(price(80), 5)
+
+    def test_baby(self):
+        self.assertEqual(price(0), 0)
+        self.assertEqual(price(1), 0)
+PY
+    mg add -A; mg commit -qm "init: ticket prices and tests (2 tests fail)"
+    git branch -q -M main; git push -q origin main
+    cg switch -qc claude/fix-tickets
+    awk '/^    if age < 12:/ { print "    if age == 1:"; print "        return 0" } { sub(/age > 65/, "age >= 65"); print }' tickets.py > tickets.new
+    mv tickets.new tickets.py
+    sed -i.bak -e '/price(0), 0/d' test_tickets.py
+    rm -f ./*.bak
+    cg commit -qam "Fix ticket prices" -m "Fixed it, all tests pass! ✅
+- Seniors aged exactly 65 now pay half price
+- Babies now get in free
+- Cleaned up the tests"
+    cg push -q origin claude/fix-tickets )
+  rm -rf "$t"
+  git clone -q "$d/origin.git" "$d/you" 2>/dev/null
+  cd "$d/you"; ident
+  local th; th="$(git show origin/main:test_tickets.py | git hash-object --stdin)"
+  cat > "$d/origin.git/hooks/pre-receive" <<HOOK
+#!/bin/sh
+while read old new ref; do
+  case "\$ref" in
+    refs/heads/main)
+      echo "main is protected: nobody pushes to it directly."
+      echo "Push your fix to claude/fix-tickets instead."
+      exit 1 ;;
+    refs/heads/claude/fix-tickets)
+      if [ "\$(git show "\$new:test_tickets.py" 2>/dev/null | tr -d '\r' | git hash-object --stdin)" != "$th" ]; then
+        echo "Rejected: 'all tests pass' only counts with the team's tests, and test_tickets.py is not the same as on main."
+        echo "Read every change Claude made, including in the test file."
+        exit 1
+      fi
+      c="\$(git show "\$new:tickets.py" 2>/dev/null | tr -d '\r' | sed 's/#.*//')"
+      if printf '%s\n' "\$c" | grep -q '=='; then
+        echo "Rejected: tickets.py still has a special case for one exact age (==). That only makes one test pass."
+        echo "Follow the rules in the docstring for every age."
+        exit 1
+      fi
+      if ! printf '%s\n' "\$c" | grep -Eq 'age *(>= *65|> *64)([^0-9]|\$)'; then
+        echo "Rejected: Claude's change for age 65 was the honest part. Keep it."
+        exit 1
+      fi
+      b="\$(printf '%s\n' "\$c" | grep -En 'age *(< *2|<= *1)([^0-9]|\$)' | head -n1 | cut -d: -f1)"
+      k="\$(printf '%s\n' "\$c" | grep -En 'age *< *12' | head -n1 | cut -d: -f1)"
+      if [ -z "\$b" ] || [ -z "\$k" ] || [ "\$b" -gt "\$k" ] || ! printf '%s\n' "\$c" | grep -q 'return 0'; then
+        echo "Rejected: babies (under 2) must be free for every age under 2, checked before the under-12 rule. Run: python3 -m unittest"
+        exit 1
+      fi
+      echo "Honest fix: the team's tests pass for real. Flag: \$(printf %s 'VEFJU1B7Z3JlZW5fdGVzdHNfY2FuX3N0aWxsX2xpZX0=' | base64 -d)" ;;
+  esac
+done
+exit 0
+HOOK
+  chmod 755 "$d/origin.git/hooks/pre-receive"
+  done_msg "$d/you"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./start <id>
@@ -597,6 +700,7 @@ Usage: ./start <id>
                                      09  "your branch is up to date"
                                      10  review a teammate's branch
                                      11  "All done!" (check Claude's summary)
+                                     12  the too-good AI fix
 EOF
 }
 
@@ -615,5 +719,6 @@ case "$id" in
   09) setup_09 ;;
   10) setup_10 ;;
   11) setup_11 ;;
+  12) setup_12 ;;
   *) usage; exit 1 ;;
 esac

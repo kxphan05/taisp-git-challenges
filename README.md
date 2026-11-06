@@ -28,6 +28,7 @@ Stuck or broken? Run `./start 03` again to get a fresh copy.
 | 09 | "your branch is up to date" |
 | 10 | review a teammate's branch |
 | 11 | "All done!" (check Claude's summary) |
+| 12 | the too-good AI fix |
 
 **Windows:** run these in *Git Bash* (installed with Git for Windows).
 Reading the `start` script will spoil the challenges. The reps are the point.
