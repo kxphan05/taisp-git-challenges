@@ -15,23 +15,25 @@ cd play/03-merge-conflict
 The task is on CTFd. There's no checker: finishing the task, or digging through the history, shows you the flag. Paste it into CTFd.
 Stuck or broken? Run `./start 03` again to get a fresh copy.
 
+**Easy** (everyone, about 30 minutes):
+
 | Id | Practice repo |
 |----|---------------|
+| 00 | clone this repo (you're done!) |
 | 01 | your first push (real GitHub) |
 | 02 | branch and pull request (real GitHub) |
 | 03 | merge conflict |
 | 04 | teammate pushed first |
+
+**Hard** (optional, if you finish early):
+
+| Id | Practice repo |
+|----|---------------|
 | 05 | undo and recover (3 flags) |
 | 06 | the lost commit |
 | 07 | the stashed work |
 | 08 | committed on main by mistake |
 | 09 | "your branch is up to date" |
-| 10 | review a teammate's branch |
-| 11 | "All done!" (check Claude's summary) |
-| 12 | the too-good AI fix |
-| 13 | Claude went wild |
-| 14 | Claude force-pushed |
-| 15 | the README that talks to Claude |
 
 **Windows:** run these in *Git Bash* (installed with Git for Windows).
 Reading the `start` script will spoil the challenges. The reps are the point.
